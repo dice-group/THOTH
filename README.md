@@ -1,2 +1,2 @@
-# THOT
-A Linked-Data driven Neural Machine Translation Framework
+# THOTH
+A Linked-data driven Neural Machine Translation Framework
