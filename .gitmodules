@@ -1,3 +1,6 @@
-[submodule "nmt"]
-	path = nmt
-	url = https://github.com/tensorflow/nmt.git
+[submodule "mmt"]
+	path = mmt
+	url = https://github.com/ModernMT/MMT.git
+[submodule "mmt/ModernMT"]
+	path = mmt/ModernMT
+	url = git@github.com:ModernMT/MMT.git

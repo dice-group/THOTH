@@ -1,0 +1,846 @@
+#!/usr/bin/env python
+import argparse
+import os
+import shutil
+import sys
+import getpass
+
+from cli import IllegalStateException, IllegalArgumentException, CorpusNotFoundInFolderException
+from cli.evaluation import Evaluator
+from cli.libs import shell
+from cli.libs.datahub import DataHub
+from cli.libs.progressbar import Progressbar, UndefinedProgressbar
+from cli.mmt import BilingualCorpus, TMXCorpus, FileParallelCorpus
+from cli.mmt.engine import Engine
+from cli.mmt.cluster import ClusterNode
+from cli.mmt.processing import TrainingPreprocessor
+from cli.training import Training, Tuning
+from cli.translation import BatchTranslator, InteractiveTranslator, XLIFFTranslator
+
+__author__ = 'Davide Caroselli and Andrea Rossi'
+__description = '''\
+  MMT is a context-aware, incremental and general purpose Machine Translation technology.
+
+  MMT goal is to make MT easy to adopt and scale.
+
+  With MMT you don\'t need anymore to train multiple custom engines,
+  you can push all your data to a single engine that will automatically
+  and in real-time adapt to the context you provide.
+  MMT aims to deliver the quality of a custom engine and the low sparsity
+  of your all data combined.
+
+  You can find more information on: http://www.modernmt.eu/
+'''
+
+
+def __check_java():
+    try:
+        _, stderr = shell.execute(['java', '-version'])
+
+        ok = False
+        for line in stderr.split('\n'):
+            tokens = line.split()
+            if 'version' in tokens:
+                if '"1.8' in tokens[tokens.index('version') + 1]:
+                    ok = True
+                    break
+        if not ok:
+            print 'ERROR: Wrong version of Java, required Java 8'
+            exit(1)
+    except OSError:
+        print 'ERROR: Missing Java executable, please check INSTALL.md'
+        exit(1)
+
+
+class CLIArgsException(Exception):
+    def __init__(self, parser, error):
+        self.parser = parser
+        self.message = error
+
+
+def main_create(argv):
+    parser = argparse.ArgumentParser(description='Create a new MMT engine from the input corpora')
+    parser.prog = 'mmt create'
+    parser.add_argument('source_lang', metavar='SOURCE_LANGUAGE', help='the source language (ISO 639-1)')
+    parser.add_argument('target_lang', metavar='TARGET_LANGUAGE', help='the target language (ISO 639-1)')
+    parser.add_argument('corpora_paths', metavar='CORPORA', nargs='+',
+                        help='the paths to the training corpora. You can specify more than one path, '
+                             'in every folder you can put mixed monolingual and bilingual corpora')
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+    parser.add_argument('-d', '--debug', action='store_true', dest='debug',
+                        help='if debug is set, it enables verbose logging and prevents temporary files to be removed '
+                             'after execution')
+    parser.add_argument('--no-split', action='store_false', dest='split_corpora', default=True,
+                        help='if no-split is set, MMT will not extract dev and test sets out of the provided '
+                             'training corpora')
+    parser.add_argument('--words-limit', dest='max_words', help='limits the max number of source words in training set',
+                        default=None)
+    parser.add_argument('-s', '--steps', metavar='STEPS', dest='training_steps',
+                        nargs='+', help='run only specified training steps')
+    parser.add_argument('-r', '--resume', action='store_true', dest='resume', default=False,
+                        help='if resume is set, it restores a previously interrupted process')
+
+    # Neural args
+    nmt_arguments = parser.add_argument_group('neural decoder only arguments')
+    nmt_arguments.add_argument('--neural', action='store_true', dest='neural', default=False,
+                               help='if set, the process will train a neural engine (default is phrase-based)')
+    nmt_arguments.add_argument('--checkpoint', dest='checkpoint',
+                               help='initial model for the training, by default a random network is used. '
+                                    'You must use the model prefix, i.e. "path/to/engine/models/decoder/model.en__it")')
+    nmt_arguments.add_argument('--metadata', dest='metadata',
+                               help='the path to the neural engine metadata file')
+    nmt_arguments.add_argument('--validation-corpora', dest='validation_corpora',
+                               help='if neural is set, you can provide a custom validation corpora with this option '
+                                    '(dev set used by default).', default=None)
+
+    nmt_arguments.add_argument('--gpus', dest='gpus', nargs='+', type=int, default=None,
+                               help='if neural is set, you can specify the list of GPUs available to MMT. '
+                                    '(default value is all available GPUs). Specify the value -1 to not use any GPU. '
+                                    'WARNING: MMT only uses one GPU in training, choosing it among the available ones.')
+
+    nmt_arguments.add_argument('--bpe-symbols', dest='bpe_symbols', type=int,
+                               help='if neural is set, this is the number of symbols of the BPE encoder '
+                                    '(default value is 32000).', default=32000)
+    nmt_arguments.add_argument('--max-vocabulary-size', dest='max_vocab_size', type=int,
+                               help='if neural is set, this is the maximum size of the vocabulary '
+                                    '(default value is unbound).', default=None)
+    nmt_arguments.add_argument('--vocabulary-prune', dest='vocab_pruning_threshold', type=float,
+                               help='if neural is set, this is the threshold to prune out subwords of the vocabulary '
+                                    '(default value is unbound, must be within (0,1].', default=None)
+    nmt_arguments.add_argument('--batch-size', dest='batch_size', type=int, default=64,
+                               help='if neural is set, set the batch size (default value is 64).')
+    nmt_arguments.add_argument('--learning-rate', dest='learning_rate', type=float, default=1.0,
+                               help='if neural is set, sets the initial learning rate (default value is 1.0).')
+    nmt_arguments.add_argument('--learning-rate-decay', dest='lr_decay', type=float, default=0.9,
+                               help='if neural is set, set the learning rate decay (default value is 0.9).')
+    nmt_arguments.add_argument('--learning-rate-decay-start-at', dest='lr_decay_start_at', type=int, default=50000,
+                               help='if neural is set, start learning rate decay after this number of steps '
+                                    '(default value is 50000).')
+    nmt_arguments.add_argument('--learning-rate-decay-steps', dest='lr_decay_steps', type=int, default=10000,
+                               help='if neural is set, decrease learning rate every this number of steps '
+                                    '(default value is 10000).')
+    nmt_arguments.add_argument('--report-steps', dest='report_steps', type=int, default=100,
+                               help='if neural is set, log status every this number of steps (default value is 100).')
+    nmt_arguments.add_argument('--validation-steps', dest='validation_steps', type=int, default=10000,
+                               help='if neural is set, compute the validation score every  this number of steps '
+                                    '(default value is 10000).')
+    nmt_arguments.add_argument('--checkpoint-steps', dest='checkpoint_steps', type=int, default=10000,
+                               help='if neural is set, drop a checkpoint every this number of steps '
+                                    '(default value is 10000).')
+    nmt_arguments.add_argument('--step-limit', dest='step_limit', type=int, default=None,
+                               help='if neural is set, run for this number of steps at most '
+                                    '(default value is infinite).')
+    nmt_arguments.add_argument('--checkpoints', dest='n_checkpoints', type=int, default=20,
+                               help='if neural is set, this is the number of checkpoints saved during the training and '
+                                    'used to evaluate terminate condition (default value is 20).')
+    nmt_arguments.add_argument('--average-checkpoints', dest='n_avg_checkpoints', type=int, default=20,
+                               help='if neural is set, number of checkpoints to merge at the end of training process '
+                                    '(default value is 20).')
+
+    if len(argv) > 0:
+        # Parse args
+        args = parser.parse_args(argv)
+
+        # stop the node with the given engine name if it is already running
+        node = ClusterNode.connect(args.engine, silent=True)
+        if node is not None and node.is_running():
+            node.stop()
+
+        # initialize a builder to create and train a new engine
+        if args.neural:
+            if not args.split_corpora and args.validation_corpora is None:
+                raise CLIArgsException(parser, 'you must specify a validation set (remove --no-split option or use '
+                                               '--validation-corpora option)')
+
+            if args.gpus == [-1]:
+                args.gpus = []
+
+            training = Training.neural(name=args.engine,
+                                       source_lang=args.source_lang,
+                                       target_lang=args.target_lang,
+                                       roots=args.corpora_paths,
+                                       debug=args.debug,
+                                       steps=args.training_steps,
+                                       split_trainingset=args.split_corpora,
+                                       validation_corpora=args.validation_corpora,
+                                       checkpoint=args.checkpoint,
+                                       metadata=args.metadata,
+                                       max_training_words=args.max_words,
+                                       gpus=args.gpus,
+                                       training_args=args)
+        else:
+            training = Training.phrase_based(name=args.engine,
+                                             source_lang=args.source_lang,
+                                             target_lang=args.target_lang,
+                                             roots=args.corpora_paths,
+                                             debug=args.debug,
+                                             steps=args.training_steps,
+                                             split_trainingset=args.split_corpora,
+                                             max_training_words=args.max_words)
+
+        # build the engine
+        if args.resume:
+            training.resume()
+        else:
+            training.start()
+    else:
+        parser.print_help()
+
+
+def main_start(argv):
+    parser = argparse.ArgumentParser(description='Start a MMT cluster node')
+    parser.prog = 'mmt start'
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+    parser.add_argument('-v', '--verbosity', dest='verbosity', help='log verbosity (0 = only severe errors, '
+                                                                    '3 = finest logging)', default=None)
+    parser.add_argument('-p', '--api-port', dest='api_port', metavar='API_PORT',
+                        help='the public REST Api port. (default is 8045)', default=None, type=int)
+    parser.add_argument('--cluster-port', dest='cluster_port', metavar='CLUSTER_PORT',
+                        help='the network port used internally by the cluster for communication between '
+                             'Cluster nodes. (default is 5016)', default=None, type=int)
+    parser.add_argument('--datastream-port', dest='datastream_port', metavar='DATASTREAM_PORT',
+                        help='the network port used by Datastream, currently implemented with Kafka '
+                             '(default is 9092', default=None, type=int)
+    parser.add_argument('--db-port', dest='db_port', metavar='DB_PORT',
+                        help='the network port used by the DB, currently implemented with Cassandra '
+                             '(default is 9042', default=None, type=int)
+    parser.add_argument('--join-leader', dest='leader', metavar='NODE_IP', default=None,
+                        help='use this option to join this node to an existent cluster. '
+                             'NODE is the IP of the remote host to connect to.')
+    parser.add_argument('-d', '--remote-debug', action='store_true', dest='remote_debug',
+                        help='setting this option allows Java to connect for remote debug '
+                             '(intended only for development purpose)')
+
+    # Parse args
+    args = parser.parse_args(argv)
+
+    # create a clusterNode for that engine
+    node = ClusterNode.connect(args.engine)
+    ensure_not_running(node)
+
+    success = False
+
+    try:
+        # start the ClusterNode
+        print 'Starting MMT engine \'{engine}\'...'.format(engine=args.engine),
+        node.start(api_port=args.api_port,
+                   cluster_port=args.cluster_port,
+                   datastream_port=args.datastream_port,
+                   db_port=args.db_port,
+                   leader=args.leader,
+                   verbosity=args.verbosity,
+                   remote_debug=args.remote_debug)
+
+        # wait for the node to start
+        node.wait('JOINED')
+        print 'OK'
+        # Current version does not synchronize models
+        # if args.sibling is not None:
+        #     print 'Synchronizing models...',
+        #     node.wait('SYNCHRONIZED')
+        #     print 'OK'
+        print 'Loading models...',
+        node.wait('READY')
+        print 'OK'
+
+        # the node has started
+        print
+        print "The MMT engine '" + args.engine + "' is ready."
+        print
+
+        if node.api is not None:
+            print 'You can try the API with:\n' \
+                  '\tcurl "%s/translate?q=world&source=en&target=it&context=computer"' \
+                  ' | python -mjson.tool\n' % node.api.base_path
+        success = True
+
+    except Exception:
+        print 'FAIL'
+        raise
+    finally:
+        if not success:
+            node.stop()
+
+
+def main_stop(argv):
+    parser = argparse.ArgumentParser(description='Stop the local instance of MMT engine')
+    parser.prog = 'mmt stop'
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+
+    # Parse args
+    args = parser.parse_args(argv)
+    # connect to the already active cluster node
+    node = ClusterNode.connect(args.engine)
+
+    print
+    print 'Stopping MMT engine \'{engine}\'...'.format(engine=node.engine.name),
+
+    if node.is_running():
+        node.stop()
+    print 'OK \n'
+
+
+def main_tune(argv):
+    parser = argparse.ArgumentParser(description='Tune MMT engine')
+    parser.prog = 'mmt tune'
+    parser.add_argument('--path', dest='corpora_path', metavar='CORPORA', default=None,
+                        help='the path to the tuning corpora (default is the automatically split sample)')
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+    parser.add_argument('-d', '--debug', action='store_true', dest='debug', help='if debug is set, it enables verbose '
+                                                                                 'logging and prevents temporary files '
+                                                                                 'to be removed after execution')
+
+    # Phrase-based tuning
+    pb_arguments = parser.add_argument_group('phrase-based decoder only arguments')
+    pb_arguments.add_argument('--skip-context-analysis', dest='context_enabled', default=True, action='store_false',
+                              help='if set, context analysis is skipped')
+    pb_arguments.add_argument('--random-seeds', dest='random_seeds', help='if set, uses random seed for tuning',
+                              default=False, action='store_true')
+    pb_arguments.add_argument('--max-iterations', dest='max_iterations', default=25, type=int,
+                              help='set maximum iterations during tuning (default is 25)')
+    pb_arguments.add_argument('--accuracy', dest='accuracy', choices=['default', 'fast', 'best'], default='default',
+                              help='accuracy value set the trade-off between quality and speed, possible values are: '
+                                   '"default" - for good trade-off between translation quality and process duration, '
+                                   '"best" - for best translation quality and slower tuning process, '
+                                   '"fast" - for fastest tuning process at the expense of translation quality.')
+
+    # Neural tuning
+    nmt_arguments = parser.add_argument_group('neural decoder only arguments')
+    nmt_arguments.add_argument('--max-lines', dest='max_lines', default=None, type=int,
+                               help='the maximum number of lines to be randomly picked from the tuning corpora '
+                                    '(default: use all lines in the tuning corpora)')
+    nmt_arguments.add_argument('--learning-rate-step', dest='lr_delta', type=float, default=0.1,
+                               help='learning rate step to be used during tuning (default is 0.1)')
+    nmt_arguments.add_argument('--max-epochs', dest='max_epochs', default=10, type=int,
+                               help='the max number of epochs to be used during adaptation (default is 10)')
+    nmt_arguments.add_argument('--gpus', dest='gpus', nargs='+', type=int, default=None,
+                               help='if neural is set, you can specify the list of GPUs used during training '
+                                    '(default value is all available GPUs). Specify the value -1 to not use any GPU.')
+
+    # Parse args
+    args = parser.parse_args(argv)
+
+    # Setting up cluster node and tuning process
+    node = ClusterNode.connect(args.engine)
+    if node.engine.type() == 'neural':
+        tuning = Tuning.neural(max_lines=args.max_lines, lr_delta=args.lr_delta,
+                               max_epochs=args.max_epochs, gpus=args.gpus)
+    else:
+        tuning = Tuning.phrase_based(context_enabled=args.context_enabled, random_seeds=args.random_seeds,
+                                     max_iterations=args.max_iterations, accuracy=args.accuracy)
+
+    if tuning.requires_node_running():
+        ensure_running(node)
+        ensure_api(node)
+
+    if tuning.requires_node_stop():
+        ensure_not_running(node)
+
+    # Perform tuning
+    corpora = BilingualCorpus.list(args.corpora_path) if args.corpora_path is not None else None
+    tuning.start(node, corpora, debug=args.debug)
+
+
+def main_evaluate(argv):
+    parser = argparse.ArgumentParser(description='Evaluate MMT engine')
+    parser.prog = 'mmt evaluate'
+    parser.add_argument('--path', dest='corpora_path', metavar='CORPORA', default=None,
+                        help='the path to the test corpora (default is the automatically splitted sample)')
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+    parser.add_argument('--gt-key', dest='gt_key', metavar='GT_API_KEY', default=None,
+                        help='A custom Google Translate API Key to use during evaluation')
+    parser.add_argument('--gt-nmt', action='store_true', dest='gt_nmt', default=False,
+                        help='Use Neural Google Translate API during evaluation, '
+                             'you have to specify a valid key with --gt-key')
+    parser.add_argument('--human-eval', dest='heval_output', metavar='OUTPUT', default=None,
+                        help='the output folder for the tab-spaced files needed to setup a Human Evaluation benchmark')
+    parser.add_argument('-d', '--debug', action='store_true', dest='debug', help='if debug is set, it enables verbose '
+                                                                                 'logging and prevents temporary files '
+                                                                                 'to be removed after execution')
+
+    # Parse args
+    args = parser.parse_args(argv)
+
+    # connect to the already active cluster node
+    node = ClusterNode.connect(args.engine)
+    ensure_running(node)
+    ensure_api(node)
+
+    # perform evaluation
+    evaluator = Evaluator(node, google_key=args.gt_key, google_nmt=args.gt_nmt)
+    corpora = BilingualCorpus.list(args.corpora_path) if args.corpora_path is not None \
+        else BilingualCorpus.list(os.path.join(node.engine.data_path, TrainingPreprocessor.TEST_FOLDER_NAME))
+    evaluator.evaluate(corpora=corpora, heval_output=args.heval_output, debug=args.debug)
+
+    if args.heval_output is not None:
+        print 'Files for Human Evaluation are available here:', os.path.abspath(args.heval_output)
+        print
+
+
+def main_delete(argv):
+    parser = argparse.ArgumentParser(description='Deletes an MMT engine')
+    parser.prog = 'mmt delete'
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+    parser.add_argument('--yes', action='store_false', dest='ask_confirmation', default=True,
+                        help='if "--yes" is set, this command won\'t ask for confirmation')
+
+    # Parse args
+    args = parser.parse_args(argv)
+
+    # connect to the already active cluster node
+    node = ClusterNode.connect(args.engine)
+
+    delete = True
+
+    if args.ask_confirmation:
+        valid = {'yes': True, 'y': True, 'ye': True, 'no': False, 'n': False}
+
+        while True:
+            print 'Are you sure you want to delete engine "%s"? [y/N] ' % args.engine,
+            choice = raw_input().lower()
+
+            if choice == '':
+                delete = False
+                break
+            elif choice in valid:
+                delete = valid[choice]
+                break
+            else:
+                print 'Please respond with "yes" or "no" (or "y" or "n").'
+
+    if delete:
+        print '\nDeleting engine "{engine}"...'.format(engine=args.engine),
+        if node.is_running():
+            node.stop()
+        shutil.rmtree(node.engine.path, ignore_errors=True)
+        print 'OK\n'
+    else:
+        print 'Aborted'
+
+
+def main_status(argv):
+    parser = argparse.ArgumentParser(description='Show the MMT engines status')
+    parser.prog = 'mmt status'
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default=None)
+
+    # Parse args
+    args = parser.parse_args(argv)
+    if args.engine is None:
+        engines = Engine.list()
+    else:
+        engines = [args.engine]
+    if len(engines) == 0:
+        print 'No engine could be found.'
+        print 'You can create a new engine with the ./mmt create command.'
+
+    # Get engine names and for each engine connect to its clusterNode and print its data
+    for engine_name in engines:
+        node = ClusterNode.connect(engine_name)
+        node_running = node.is_running()
+
+        print '================================================'
+        print 'Engine: \'' + engine_name + '\''
+
+        api_info = node.api
+        print '   REST API:\t',
+        if api_info is None and node_running:
+            print 'disabled'
+        elif node_running:
+            print ('running - %s/translate' % api_info.base_path)
+        else:
+            print 'stopped'
+
+        # cluster can not be disabled!
+        print '   Cluster:\t', ('running - port %d' % node.cluster_port if node_running else 'stopped')
+
+        datastream_info = node.datastream_info()
+        print '   Datastream:\t',
+        if datastream_info is None and node_running:
+            print 'disabled'
+        elif node_running:
+            datastream_host, datastream_port = datastream_info
+            print ('running - %s:%d' % (datastream_host, datastream_port))
+        else:
+            print 'stopped'
+
+        database_info = node.db_info()
+        print '   Database:\t',
+        if database_info is None and node_running:
+            print 'disabled'
+        elif node_running:
+            db_host, db_port = database_info
+            print ('running - %s:%d' % (db_host, db_port))
+        else:
+            print 'stopped'
+
+
+def main_translate(argv):
+    parser = argparse.ArgumentParser(description='Translate text with ModernMT')
+
+    parser.add_argument('text', metavar='TEXT', help='text to be translated (optional)', default=None, nargs='?')
+
+    # Context arguments
+    parser.add_argument('--context', metavar='CONTEXT', dest='context',
+                        help='A string to be used as translation context')
+    parser.add_argument('--context-file', metavar='CONTEXT_FILE', dest='context_file',
+                        help='A local file to be used as translation context')
+    parser.add_argument('--context-vector', metavar='CONTEXT_VECTOR', dest='context_vector',
+                        help='The context vector with format: <document 1>:<score 1>[,<document N>:<score N>]')
+
+    # NBest list arguments
+    parser.add_argument('--nbest', metavar='NBEST', dest='nbest', default=None, type=int,
+                        help='The number of nbest to print')
+    parser.add_argument('--nbest-file', metavar='NBEST_FILE', dest='nbest_file', default=None,
+                        help='The destination file for the NBest, default is stdout')
+
+    # Mixed arguments
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+    parser.add_argument('--batch', action='store_true', dest='batch', default=False,
+                        help='if set, the script will read the whole stdin before send translations to MMT.'
+                             'This can be used to execute translation in parallel for a faster translation. ')
+    parser.add_argument('--xliff', dest='is_xliff', action='store_true', default=False,
+                        help='if set, the input is a XLIFF file.')
+
+    # Parse args
+    args = parser.parse_args(argv)
+
+    # connect to the already active cluster node
+    node = ClusterNode.connect(args.engine)
+    ensure_running(node)
+    ensure_api(node)
+
+    # choose the which translator to use, depending on the input format
+    if args.is_xliff:
+        translator = XLIFFTranslator(node, context_string=args.context, context_file=args.context_file,
+                                     context_vector=args.context_vector)
+    elif args.batch:
+        translator = BatchTranslator(node, context_string=args.context, context_file=args.context_file,
+                                     context_vector=args.context_vector, print_nbest=args.nbest,
+                                     nbest_file=args.nbest_file)
+    else:
+        translator = InteractiveTranslator(node, context_string=args.context, context_file=args.context_file,
+                                           context_vector=args.context_vector, print_nbest=args.nbest,
+                                           nbest_file=args.nbest_file)
+
+    # translate
+    try:
+        if args.text is not None:
+            translator.execute(args.text.strip())
+        else:
+            while 1:
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                translator.execute(line.strip())
+
+        translator.flush()
+    except KeyboardInterrupt:
+        # exit
+        pass
+    finally:
+        translator.close()
+
+
+def main_add(argv):
+    parser = argparse.ArgumentParser(description='Add contribution to an existent memory')
+
+    parser.add_argument('memory', help='The id or name of the memory you want to add the contribution to')
+    parser.add_argument('source', metavar='SOURCE_SENTENCE', help='The source sentence of the contribution')
+    parser.add_argument('target', metavar='TARGET_SENTENCE', help='The target sentence of the contribution')
+
+    # Mixed arguments
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+
+    args = parser.parse_args(argv)
+
+    node = ClusterNode.connect(args.engine)
+    ensure_running(node)
+    ensure_api(node)
+
+    node.append_to_memory(args.memory, args.source, args.target)
+
+    print 'SUCCESS - contribution added to memory "' + args.memory + '"'
+
+
+def main_rename(argv):
+    parser = argparse.ArgumentParser(description='Rename an existent memory')
+
+    parser.add_argument('memory', help='The id or name of the memory you want to rename')
+    parser.add_argument('name', help='The new name')
+
+    # Mixed arguments
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+
+    args = parser.parse_args(argv)
+
+    node = ClusterNode.connect(args.engine)
+    ensure_running(node)
+    ensure_api(node)
+
+    memory = node.rename_memory(args.memory, args.name)
+
+    print 'SUCCESS - changed memory name to "%s"' % memory['name']
+
+
+def main_import(argv):
+    parser = argparse.ArgumentParser(description='Import a new memory given a TMX')
+
+    parser.add_argument('-x', '--tmx-file', dest='tmx', metavar='TMX_FILE', help='TMX file to import', default=None)
+    parser.add_argument('-p', '--parallel-files', dest='parallel_file', help='Source and target file',
+                        default=None, nargs=2)
+    parser.add_argument('--path', dest='path', help='the folder containing the corpora you want to import',
+                        default=None)
+
+    # Mixed arguments
+    parser.add_argument('-e', '--engine', dest='engine', help='the engine name, \'default\' will be used if absent',
+                        default='default')
+
+    args = parser.parse_args(argv)
+
+    if args.tmx is None and args.parallel_file is None and args.path is None:
+        raise CLIArgsException(parser, 'missing one of the following options: "-x", "-p" or "--path"')
+
+    node = ClusterNode.connect(args.engine)
+    ensure_running(node)
+    ensure_api(node)
+
+    def __import(c):
+        def _import_callback(job):
+            progressbar.set_progress(job['progress'])
+
+        memory = node.new_memory(corpus.name)
+        progressbar = Progressbar(label='Importing %s' % c.name)
+        progressbar.start()
+
+        try:
+            node.import_corpus(memory['id'], corpus, callback=_import_callback)
+            progressbar.complete()
+        except BaseException as e:
+            node.delete_memory(memory['id'])
+            progressbar.abort(repr(e))
+            raise
+
+    if args.tmx is not None:
+        corpora = [TMXCorpus(os.path.basename(os.path.splitext(args.tmx)[0]), args.tmx)]
+    elif args.parallel_file is not None:
+        corpora = [FileParallelCorpus(os.path.basename(os.path.splitext(args.parallel_file[0])[0]), {
+            node.engine.source_lang: args.parallel_file[0],
+            node.engine.target_lang: args.parallel_file[1],
+        })]
+    else:
+        corpora, _ = BilingualCorpus.splitlist(node.engine.source_lang, node.engine.target_lang, roots=args.path)
+
+    success = True
+    for corpus in corpora:
+        try:
+            __import(corpus)
+        except:
+            success = False
+            pass
+
+    print 'IMPORT SUCCESS' if success else 'IMPORT FAILED'
+
+
+def main_download(argv):
+    current_folder = os.path.abspath(os.path.join(__file__, os.path.pardir))
+
+    parser = argparse.ArgumentParser(description='Generate and download a new collection of resources from DataHub')
+
+    parser.add_argument('source', help='The source language of the resources to download')
+    parser.add_argument('target', help='The target language of the resources to download')
+    parser.add_argument('srcWords', help='The amount of words in source language to download '
+                                         '(source words from bilingual resources)')
+    parser.add_argument('trgWords', nargs='?',
+                        help='The amount of words in target language to download '
+                             '(both target words from bilingual resources and words from monolingual resources)',
+                        default=None)
+
+    parser.add_argument('-O', '--destination', dest='destination',
+                        help='the destination for the downloaded file', default=current_folder)
+
+    parser.add_argument('-u', '--username', dest='username', help='your DataHub username')
+    parser.add_argument('-p', action='store_true')
+    parser.add_argument('-A', '--authentication', dest='access_token', help='your access token')
+
+    parser.add_argument('-H', '--host', dest='host', help='the DataHub server host')
+    parser.add_argument('-y', action='store_true')
+
+    args = parser.parse_args(argv)
+
+    def __parse_number(num_string):
+        magnitude = {'k': 1000, 'm': 1000000, 'b': 1000000000}
+        last_char = num_string[-1].lower()
+        try:
+            return int(num_string[:-1]) * magnitude[last_char] if last_char in magnitude.keys() else int(num_string)
+        except Exception:
+            raise Exception("Could not interpretate number " + num_string + ". "
+                                                                            "Allowed numbers examples: 100000, 25k, 104m, 1b.\n ")
+
+    src_words = __parse_number(args.srcWords)
+    trg_words = None if args.trgWords is None else __parse_number(args.trgWords)
+
+    password = None
+    if args.access_token is None and args.username is not None and args.p is True:
+        print "Write password for user " + args.username + ":"
+        password = getpass.getpass()
+    elif args.access_token is None and (args.username is None or args.p is False):
+        raise CLIArgsException(parser, "Invalid credentials: username and password, or access token, are mandatory \n")
+
+    if args.host is not None:
+        if ':' in args.host:
+            host = args.host.split(':')[0]
+            port = args.host.split(':')[1]
+            datahub = DataHub(host, port)
+        else:
+            datahub = DataHub(args.host)
+    else:
+        datahub = DataHub()
+
+    if args.access_token is not None:
+        datahub.validate_auth(args.access_token)
+    else:
+        datahub.authenticate(args.username, password)
+
+    if args.destination is None:
+        destination_folder = current_folder
+        destination_filename = None
+    elif os.path.isdir(args.destination):
+        destination_folder = args.destination
+        destination_filename = None
+    elif os.path.isfile(args.destination):
+        destination_folder, destination_filename = os.path.split(args.destination)
+        os.remove(args.destination)
+    elif args.destination.endswith('/'):
+        os.mkdir(args.destination)
+        destination_folder = args.destination
+        destination_filename = None
+    else:
+        destination_folder, destination_filename = os.path.split(args.destination)
+
+    collection = datahub.generate_collection(args.source, args.target, src_words, trg_words)
+    print "Obtained collection: " + collection["name"]
+    print "Id: " + str(collection["id"])
+    print "Source Language: " + collection["source"]
+    print "Target Language: " + collection["target"]
+    print "Approximate source words: " + str(collection["approxSourceWords"])
+    print "Approximate target words: " + str(collection["approxTargetWords"])
+
+    if not args.y:
+        var = raw_input("Do you want to download it? [y/n] ")
+        if var.lower() != 'y' and var.lower() != 'yes':
+            print("Bye.\n")
+            exit()
+
+    progressbar = UndefinedProgressbar(label='Downloading Collection')
+    try:
+        progressbar.start()
+        local_filepath = datahub.download_collection(collection, destination_folder, destination_filename)
+        progressbar.complete()
+        print "File downloaded in path: " + local_filepath
+        print "Success.\n"
+    except:
+        progressbar.cancel()
+        raise
+
+
+def main():
+    actions = {
+        'create': main_create,
+        'start': main_start,
+        'stop': main_stop,
+        'status': main_status,
+        'delete': main_delete,
+        'evaluate': main_evaluate,
+        'tune': main_tune,
+        'translate': main_translate,
+        'add': main_add,
+        'rename': main_rename,
+        'import': main_import,
+        'download': main_download,
+    }
+
+    # Set unbuffered stdout
+    unbuffered = os.fdopen(sys.stdout.fileno(), 'w', 0)
+    sys.stdout = unbuffered
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=__description,
+                                     usage='%(prog)s [-h] ACTION [args]', add_help=False, prog='mmt')
+    parser.add_argument('action', metavar='ACTION', choices=actions.keys(), help='{%(choices)s}', nargs='?')
+    parser.add_argument('-h', '--help', dest='help', action='store_true', help='show this help message and exit')
+
+    argv = sys.argv[1:]
+
+    if len(argv) == 0:
+        parser.print_help()
+        exit(1)
+
+    command = argv[0]
+    args = argv[1:]
+
+    try:
+        if command in actions:
+            actions[command](args)
+        else:
+            parser.print_help()
+            exit(1)
+    except CLIArgsException as e:
+        message = '{prog}: error: {message}\n'.format(prog=e.parser.prog, message=e.message)
+        e.parser.print_usage(file=sys.stderr)
+        sys.stderr.write(message)
+        exit(1)
+    except CorpusNotFoundInFolderException as e:
+        sys.stderr.write('\nERROR Corpus not found: {message}\n'.format(message=e.message))
+        exit(1)
+    except IllegalArgumentException as e:
+        sys.stderr.write('\nERROR Illegal Argument: {message}\n'.format(message=e.message))
+        exit(1)
+    except IllegalStateException as e:
+        sys.stderr.write('\nERROR Illegal State: {message}\n'.format(message=e.message))
+        exit(1)
+    except KeyboardInterrupt:
+        sys.stderr.write('\nERROR Process Interrupted')
+        exit(1)
+    except Exception as e:
+        sys.stderr.write('\nERROR Unexpected exception:\n\t{message}\n'.format(message=repr(e)))
+        raise
+
+
+# Check that the node is running
+# and throw an IllegalStateException if it is not
+def ensure_running(node):
+    if not node.is_running():
+        raise IllegalStateException('MMT engine \'%s\' is not running.\n'
+                                    'Start it with "./mmt start"\n'
+                                    'You can check the status of your engines with "./mmt status"'
+                                    % node.engine.name)
+
+
+# Check that the node is not running
+# and throw an IllegalStateException if it is
+def ensure_not_running(node):
+    if node.is_running():
+        raise IllegalStateException('MMT engine \'%s\' is already running.\n'
+                                    'You can check the status of your engines with "./mmt status"'
+                                    % node.engine.name)
+
+
+# Check that the REST Server of the engine is running
+# and throw an IllegalStateException if it is not
+def ensure_api(node):
+    if node.api is None:
+        raise IllegalStateException('No MMT REST Server running. Enable it and restart the engine to perform tuning')
+
+
+if __name__ == '__main__':
+    __check_java()
+    main()

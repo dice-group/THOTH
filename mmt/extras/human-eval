@@ -1,0 +1,236 @@
+#!/usr/bin/env python
+import argparse
+import os
+
+import sys
+from random import shuffle
+
+
+class Translation:
+    def __init__(self, id):
+        self.id = id
+        self.source = None
+        self.reference = None
+        self.mts = {}
+
+
+class Translations:
+    @staticmethod
+    def __load(filename, output, key):
+        with open(filename) as stream:
+            for line in stream:
+                id, lang, line = line.split('\t', 2)
+                line = line.strip()
+
+                if id in output:
+                    translation = output[id]
+                else:
+                    output[id] = translation = Translation(id)
+
+                if key == '#ref':
+                    translation.reference = line
+                elif key == '#src':
+                    translation.source = line
+                else:
+                    translation.mts[key] = line
+
+    def __init__(self, path):
+        source = None
+        reference = None
+        mts = []
+
+        for f in os.listdir(path):
+            filename = f[:f.rfind('.')]
+            filepath = os.path.join(path, f)
+
+            if 'source' == filename:
+                source = filepath
+            elif 'reference' == filename:
+                reference = filepath
+            elif len(filename) > 0:
+                mts.append(filepath)
+
+        if reference is None:
+            raise Exception('Missing reference file')
+        if source is None:
+            raise Exception('Missing source file')
+        if len(mts) == 0:
+            raise Exception('Missing machine translated files')
+
+        self.mts = []
+        self._translations = {}
+        self.__load(reference, self._translations, '#ref')
+        self.__load(source, self._translations, '#src')
+
+        for mt in mts:
+            name = os.path.basename(mt)
+            name = name[:name.rfind('.')]
+            self.__load(mt, self._translations, name)
+            self.mts.append(name)
+
+    def __iter__(self):
+        for translation in self._translations.values():
+            yield translation
+
+    def __len__(self):
+        return len(self._translations.values())
+
+    def strip(self):
+        to_remove = []
+
+        for id, translation in self._translations.iteritems():
+            keep = False
+            ref = None
+
+            for line in translation.mts.values():
+                if ref is None:
+                    ref = line
+                elif ref != line:
+                    keep = True
+                    break
+
+            if not keep:
+                to_remove.append(id)
+
+        for id in to_remove:
+            del self._translations[id]
+
+
+class ScoreBoard:
+    def __init__(self, mts):
+        self.mts = mts
+        self.count = 0
+        self.scores = {}
+        self.draws = 0
+        self.defeats = 0
+
+        for mt in mts:
+            self.scores[mt] = 0
+
+    def draw(self):
+        self.draws += 1
+        self.count += 1
+
+    def defeat(self):
+        self.defeats += 1
+        self.count += 1
+
+    def victory(self, winner):
+        self.scores[winner] += 1
+        self.count += 1
+
+    def __str__(self):
+        string = []
+
+        def key2desc(key):
+            return key.replace('_', ' ') + ' is best'
+
+        ll = 9
+        for key in self.mts:
+            ll = max(ll, len(key2desc(key)))
+
+        for mt, victories in self.scores.iteritems():
+            string.append(
+                key2desc(mt).ljust(ll) + (':  %d/%d (%.1f%%)' % (victories, self.count, victories * 100 / self.count)))
+
+        string.append(
+            'Both good'.ljust(ll) + (':  %d/%d (%.1f%%)' % (self.draws, self.count, self.draws * 100. / self.count)))
+        string.append(
+            'Both bad'.ljust(ll) +
+            (':  %d/%d (%.1f%%)' % (self.defeats, self.count, self.defeats * 100. / self.count)))
+
+        return '\n'.join(string)
+
+    def __repr__(self):
+        return self.__str__()
+
+
+def evaluate(index, translation, scoreboard):
+    maxlen = 9
+    for key in translation.mts:
+        maxlen = max(maxlen, len(key))
+
+    mts = scoreboard.mts[:]
+    shuffle(mts)
+
+    print 'line #'.rjust(maxlen), index
+    print 'source'.rjust(maxlen), translation.source
+    print 'reference'.rjust(maxlen), translation.reference
+    for i in range(0, len(mts)):
+        mt = mts[i]
+        line = translation.mts[mt]
+        print ('option %d' % i).rjust(maxlen), line
+    print
+
+    while True:
+        print '0..9, [B]oth or [N]one >> ',
+        uinput = sys.stdin.readline().strip().lower()
+
+        try:
+            i = int(uinput)
+            if 0 <= i < len(mts):
+                scoreboard.victory(mts[i])
+                break
+        except ValueError:
+            if uinput == 'b':
+                scoreboard.draw()
+                break
+            elif uinput == 'n':
+                scoreboard.defeat()
+                break
+            elif uinput == 'x':
+                return True
+    print
+    return False
+
+
+def print_instructions():
+    print '''
+    Human Evaluation Tool is a script to manually evaluate the translations
+    generated by 'evaluate' command with the option '--human-eval'.
+
+    List of commands:
+        - 0..9:     vote the option that produced the best translation
+        - b:        if both translations are good
+        - n:        if none of the translation options are acceptable
+        - ctrl+c:   interrupt the evaluation and print results
+    '''
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Simple script to compare translations generated by Evaluate command.')
+
+    parser.add_argument('path', metavar='PATH', help='the path to the Human Evaluation folder '
+                                                     'created by Evaluate command.')
+    args = parser.parse_args()
+
+    translations = Translations(args.path)
+    scores = ScoreBoard(translations.mts)
+
+    os.system('clear')
+    print_instructions()
+    print 'Number of lines in test set: %d\n' % len(translations)
+
+    try:
+        index = 1
+
+        for translation in translations:
+            if evaluate(index, translation, scores):
+                break
+            index += 1
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        sys.stderr.write('ERROR: ' + str(e.message) + '\n')
+        return 1
+
+    if scores.count > 0:
+        print '\n============== RESULTS ==============\n'
+        print scores
+        print
+
+    return 0
+
+
+if __name__ == '__main__':
+    exit(main())
