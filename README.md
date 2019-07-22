@@ -1,2 +1,2 @@
 # THOTH
-A Linked-data driven Neural Machine Translation Framework
+Neural Translation and Enrichment of Knowledge Graphs.
