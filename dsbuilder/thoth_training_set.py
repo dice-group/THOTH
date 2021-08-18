@@ -10,7 +10,7 @@ SRC, TGT, OUTPUT_PATH = sys.argv[1:4]
 FILENAME = 'dataset_{}2{}.tsv'.format(SRC, TGT)
 
 MAX_OFFSET = 100000
-ENDPOINT = "http://akswnc10.aksw.uni-leipzig.de:8890/sparql"
+ENDPOINT = "http://porque.cs.upb.de:3030/mapping-sample/sparql"
 GRAPH = ""
 
 def sparql_query(query):
@@ -18,16 +18,16 @@ def sparql_query(query):
     param["default-graph-uri"] = GRAPH
     param["query"] = query
     param["format"] = "JSON"
-    param["CXML_redir_for_subjs"] = "121"
-    param["CXML_redir_for_hrefs"] = ""
+    # param["CXML_redir_for_subjs"] = "121"
+    # param["CXML_redir_for_hrefs"] = ""
     param["timeout"] = "0" # really important to avoid partial results
-    param["debug"] = "on"
+    # param["debug"] = "on"
     try:
         resp = urllib2.urlopen(ENDPOINT + "?" + urllib.urlencode(param))
         j = resp.read()
         resp.close()
     except (urllib2.HTTPError, httplib.BadStatusLine):
-        print "*** Query error. Empty result set. ***"
+        print("*** Query error. Empty result set. ***")
         j = '{ "results": { "bindings": [] } }'
     sys.stdout.flush()
     return json.loads(j)
@@ -45,18 +45,20 @@ def clean(string):
 # ======================================================================
 
 # TODO if FILENAME does not exist...
-# offset = 0
-# while True:
-#     query = 'select * where { { select * where { ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 . ?s1 owl:sameAs ?s2 . ?o1 owl:sameAs ?o2 . filter(regex(?s1, "http://' + SRC + '.") && regex(?s2, "http://' + TGT + '.") && ?p1 != owl:sameAs && ?p2 != owl:sameAs) } order by ?s1 ?o1 } } limit 100000 offset ' + str(offset)
-#     print query
-#     results = sparql_query(query)["results"]["bindings"]
-#     print "results =", len(results)
-#     with open(FILENAME, 'a') as f:
-#         for row in results:
-#             f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(row["s1"]["value"], row["p1"]["value"], row["o1"]["value"], row["s2"]["value"], row["p2"]["value"], row["o2"]["value"]))
-#     if len(results) < MAX_OFFSET:
-#         break
-#     offset += MAX_OFFSET
+offset = 0
+prefix = 'PREFIX dbo: <http://dbpedia.org/ontology/> PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> PREFIX owl: <http://www.w3.org/2002/07/owl#> '
+while True:
+    query = 'SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE { ?s1 owl:sameAs ?s2 . ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 . ?o1 owl:sameAs ?o2 . FILTER(regex(str(?s1), "http://' + ((SRC+'.') if SRC != 'en' else '') + 'dbpedia.org/resource/") && regex(str(?s2), "http://' + ((TGT+'.') if TGT != 'en' else '') + 'dbpedia.org/resource/") && ?p1 != owl:sameAs && ?p2 != owl:sameAs) } LIMIT 100000 OFFSET ' + str(offset)
+    query = prefix + query
+    print(query)
+    results = sparql_query(query)["results"]["bindings"]
+    print("results =", len(results))
+    with open(FILENAME, 'a') as f:
+        for row in results:
+            f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(row["s1"]["value"], row["p1"]["value"], row["o1"]["value"], row["s2"]["value"], row["p2"]["value"], row["o2"]["value"]))
+    if len(results) < MAX_OFFSET:
+        break
+    offset += MAX_OFFSET
 
 def keep(line, f_src, f_tgt):
     src_l = list()
@@ -107,7 +109,7 @@ with open(FILENAME) as f:
                 #     break
                 
 # print analytics
-print j, "/", i
+print(j, "/", i)
 for c in cnt:
-    print '{}\t{}'.format(c,cnt[c])
+    print('{}\t{}'.format(c,cnt[c]))
 
