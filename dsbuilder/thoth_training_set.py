@@ -35,6 +35,7 @@ def sparql_query(query):
 def clean(string):
     string = string.replace("http://dbpedia.org/ontology/", "dbo_")
     string = string.replace("http://dbpedia.org/property/", "dbp_")
+    string = string.replace("http://dbpedia.org/resource/", "dbr_en_")
     string = string.replace("http://" + SRC + ".dbpedia.org/property/", "dbp_" + SRC + "_")
     string = string.replace("http://" + SRC + ".dbpedia.org/resource/", "dbr_" + SRC + "_")
     string = string.replace("http://" + TGT + ".dbpedia.org/property/", "dbp_" + TGT + "_")
@@ -48,7 +49,7 @@ def clean(string):
 offset = 0
 prefix = 'PREFIX dbo: <http://dbpedia.org/ontology/> PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> PREFIX owl: <http://www.w3.org/2002/07/owl#> '
 while True:
-    query = 'SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE { ?s1 owl:sameAs ?s2 . ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 . ?o1 owl:sameAs ?o2 . FILTER(regex(str(?s1), "http://' + ((SRC+'.') if SRC != 'en' else '') + 'dbpedia.org/resource/") && regex(str(?s2), "http://' + ((TGT+'.') if TGT != 'en' else '') + 'dbpedia.org/resource/") && ?p1 != owl:sameAs && ?p2 != owl:sameAs) } LIMIT 100000 OFFSET ' + str(offset)
+    query = 'SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE { SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE {?s1 owl:sameAs ?s2 . ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 . ?o1 owl:sameAs ?o2 . FILTER(regex(str(?s1), "http://' + ((SRC+'.') if SRC != 'en' else '') + 'dbpedia.org/resource/") && regex(str(?s2), "http://' + ((TGT+'.') if TGT != 'en' else '') + 'dbpedia.org/resource/") && ?p1 != owl:sameAs && ?p2 != owl:sameAs)} ORDER BY ?s1 ?o1 } LIMIT 100000 OFFSET ' + str(offset)
     query = prefix + query
     print(query)
     results = sparql_query(query)["results"]["bindings"]
@@ -66,6 +67,8 @@ def keep(line, f_src, f_tgt):
     for i in range(3):
         src_l.append(clean(line[i]))
         tgt_l.append(clean(line[i + 3]))
+    print('src_l:', src_l)
+    print('tgt_l:', tgt_l)
     f_src.write(" ".join(src_l) + "\n")
     f_tgt.write(" ".join(tgt_l) + "\n")
 
@@ -80,9 +83,13 @@ with open(FILENAME) as f:
     with open(OUTPUT_PATH + "/orig." + SRC, "w") as f_src:
         with open(OUTPUT_PATH + "/orig." + TGT, "w") as f_tgt:
             for line in f:
+                print('line: ',line)
                 line = line[:-1].split('\t')
                 # get S-O
                 key = (line[0], line[2])
+                print('key: ', key)
+                print('prev: ', prev)
+                print('temp_set: ', temp_set)
                 if prev == key:
                     # group aligned triples by S-O
                     temp_set.append(line)
