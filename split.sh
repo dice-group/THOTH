@@ -3,7 +3,7 @@
 # $2 : source language
 # $3 : target language
 # $4 : Seed integer
-$seed=$4
+seed=$4
 get_seeded_random()
 {
   openssl enc -aes-256-ctr -pass pass:"$seed" -nosalt \

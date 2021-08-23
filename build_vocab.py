@@ -5,7 +5,7 @@ import sys
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
-
+print 'Building Vocab'
 x_text = list()
 with open(sys.argv[1]) as f:
     for line in f:
