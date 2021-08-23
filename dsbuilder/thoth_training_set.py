@@ -47,20 +47,20 @@ def clean(string):
 # ======================================================================
 
 # TODO if FILENAME does not exist...
-offset = 0
-prefix = 'PREFIX dbo: <http://dbpedia.org/ontology/> PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> PREFIX owl: <http://www.w3.org/2002/07/owl#> '
-while True:
-    query = 'SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE { SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE {?s1 owl:sameAs ?s2 . ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 . ?o1 owl:sameAs ?o2 . FILTER(regex(str(?s1), "http://' + ((SRC+'.') if SRC != 'en' else '') + 'dbpedia.org/resource/") && regex(str(?s2), "http://' + ((TGT+'.') if TGT != 'en' else '') + 'dbpedia.org/resource/") && ?p1 != owl:sameAs && ?p2 != owl:sameAs)} ORDER BY ?s1 ?o1 } LIMIT 100000 OFFSET ' + str(offset)
-    query = prefix + query
-    print(query)
-    results = sparql_query(query)["results"]["bindings"]
-    print("results =", len(results))
-    with open(FILENAME, 'a') as f:
-        for row in results:
-            f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(row["s1"]["value"], row["p1"]["value"], row["o1"]["value"], row["s2"]["value"], row["p2"]["value"], row["o2"]["value"]))
-    if len(results) < MAX_OFFSET:
-        break
-    offset += MAX_OFFSET
+# offset = 0
+# prefix = 'PREFIX dbo: <http://dbpedia.org/ontology/> PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> PREFIX owl: <http://www.w3.org/2002/07/owl#> '
+# while True:
+#     query = 'SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE { SELECT ?s1 ?p1 ?o1 ?s2 ?p2 ?o2 WHERE {?s1 owl:sameAs ?s2 . ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 . ?o1 owl:sameAs ?o2 . FILTER(regex(str(?s1), "http://' + ((SRC+'.') if SRC != 'en' else '') + 'dbpedia.org/resource/") && regex(str(?s2), "http://' + ((TGT+'.') if TGT != 'en' else '') + 'dbpedia.org/resource/") && ?p1 != owl:sameAs && ?p2 != owl:sameAs)} ORDER BY ?s1 ?o1 } LIMIT 100000 OFFSET ' + str(offset)
+#     query = prefix + query
+#     print(query)
+#     results = sparql_query(query)["results"]["bindings"]
+#     print("results =", len(results))
+#     with open(FILENAME, 'a') as f:
+#         for row in results:
+#             f.write("{}\t{}\t{}\t{}\t{}\t{}\n".format(row["s1"]["value"], row["p1"]["value"], row["o1"]["value"], row["s2"]["value"], row["p2"]["value"], row["o2"]["value"]))
+#     if len(results) < MAX_OFFSET:
+#         break
+#     offset += MAX_OFFSET
 
 def keep(line, f_src, f_tgt):
     src_l = list()
