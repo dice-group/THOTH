@@ -41,6 +41,7 @@ def clean(string):
     string = string.replace("http://" + TGT + ".dbpedia.org/property/", "dbp_" + TGT + "_")
     string = string.replace("http://" + TGT + ".dbpedia.org/resource/", "dbr_" + TGT + "_")
     string = re.sub(r'\W+', '', string)
+    string = string.lower()
     return string
 
 # ======================================================================

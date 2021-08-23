@@ -5,7 +5,7 @@ import re
 reload(sys)
 sys.setdefaultencoding("utf-8")
 
-W2V, DICT, LANG = sys.argv[1:4]
+VECFILE, LANG = sys.argv[1:3]
 
 def clean(string):
     string = string.replace("http://dbpedia.org/ontology/", "dbo_")
@@ -17,18 +17,10 @@ def clean(string):
     string = string.lower()
     return string
 
-id2uri = dict()
-with open(DICT) as f:
-    for line in f:
-        sp = line.find(' ')
-        id2uri[line[:sp]] = line[sp+1:-1]
-
 i = 0
-with open(W2V) as f:
+with open(VECFILE) as f:
     for line in f:
         sp = line.find(' ')
         if ' ' in line[sp+1:-1]:
-            print clean(id2uri[line[:sp]]) + line[sp:-1]
+            print clean(line[:sp]) + line[sp:-1]
         i += 1
-        # if i > 3:
-        #     break
