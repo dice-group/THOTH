@@ -5,7 +5,7 @@ import re
 reload(sys)
 sys.setdefaultencoding("utf-8")
 
-VECFILE, VOCAB, LANG = sys.argv[1:4]
+VECFILE, VOCAB, LANG, OUTPUT_FILE = sys.argv[1:4]
 
 def clean(string):
     string = string.replace("http://dbpedia.org/ontology/", "dbo_")
@@ -24,11 +24,14 @@ with open(VOCAB) as f:
         vocab.append(line)
 
 with open(VECFILE) as f:
-    for line in f:
-        sp = line.find(' ')
-        if ' ' in line[sp+1:-1] and line[:sp] in vocab:
-            vocab.remove(line[:sp])
-            print clean(line[:sp]) + line[sp:-1]
-    for item in vocab:
-        print item + ' ' + def_val
+    with open(OUTPUT_FILE) as fout:
+        for line in f:
+            sp = line.find(' ')
+            label = clean(line[:sp])
+            if ' ' in line[sp+1:-1] and label in vocab:
+                vocab.remove(label)
+                fout.write(label + line[sp:-1])
+        print "Out of vocabulary: " + len(vocab)
+        for item in vocab:
+            fout.write(item + ' ' + def_val+ "\n")
 
