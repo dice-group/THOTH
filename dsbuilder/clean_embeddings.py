@@ -25,7 +25,7 @@ with open(VOCAB) as f:
 print 'Vocabulary size:', len(vocab)
 oov = 0
 with open(VECFILE) as f:
-    with open(OUTPUT_FILE) as fout:
+    with open(OUTPUT_FILE, "w") as fout:
         for line in f:
             sp = line.find(' ')
             label = clean(line[:sp])
