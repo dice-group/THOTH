@@ -28,6 +28,8 @@ with open(VECFILE) as f:
         for line in f:
             sp = line.find(' ')
             label = clean(line[:sp])
+            if LANG == 'en':
+                label = label.replace("dbr_", "dbr_en_")
             cond1 = ' ' in line[sp+1:-1]
             cond2 = label in vocab
             if cond1 and cond2:
