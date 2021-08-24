@@ -21,19 +21,18 @@ def_val = ' '.join([str(v) for v in [0.0]*500])
 vocab = list()
 with open(VOCAB) as f:
     for line in f:
-        vocab.append(line)
+        vocab.append(clean(line))
 print 'Vocabulary size:', len(vocab)
-oov = 0
 with open(VECFILE) as f:
     with open(OUTPUT_FILE, "w") as fout:
         for line in f:
             sp = line.find(' ')
             label = clean(line[:sp])
-            if ' ' in line[sp+1:-1]:
-                if label in vocab:
-                    fout.write(label + line[sp:-1])
-                else:
-                    fout.write(label + ' ' + def_val+ "\n")
-                    oov = oov + 1
-
-print 'Out of vocabulary:', oov
+            cond1 = ' ' in line[sp+1:-1]
+            cond2 = label in vocab
+            if cond1 and cond2:
+                fout.write(label + line[sp:-1])
+                vocab.remove(label)
+        print 'Out of vocabulary:', len(vocab)
+        for oov_word in vocab:
+            fout.write(oov_word+' '+def_val+'\n')
