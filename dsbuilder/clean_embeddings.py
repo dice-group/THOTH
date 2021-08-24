@@ -22,16 +22,18 @@ vocab = list()
 with open(VOCAB) as f:
     for line in f:
         vocab.append(line)
-
+print 'Vocabulary size: ' + len(vocab)
+oov = 0
 with open(VECFILE) as f:
     with open(OUTPUT_FILE) as fout:
         for line in f:
             sp = line.find(' ')
             label = clean(line[:sp])
-            if ' ' in line[sp+1:-1] and label in vocab:
-                vocab.remove(label)
-                fout.write(label + line[sp:-1])
-        print "Out of vocabulary: " + len(vocab)
-        for item in vocab:
-            fout.write(item + ' ' + def_val+ "\n")
+            if ' ' in line[sp+1:-1]:
+                if label in vocab:
+                    fout.write(label + line[sp:-1])
+                else:
+                    fout.write(label + ' ' + def_val+ "\n")
+                    oov = oov + 1
 
+print 'Out of vocabulary: ' + oov
