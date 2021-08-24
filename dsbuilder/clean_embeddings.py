@@ -18,7 +18,7 @@ def clean(string):
     return string
 
 def_val = ' '.join([str(v) for v in [0.0]*500])
-vocab = list()
+vocab = set()
 with open(VOCAB) as f:
     for line in f:
         vocab.append(clean(line))
