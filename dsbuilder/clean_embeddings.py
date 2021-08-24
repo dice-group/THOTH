@@ -8,6 +8,8 @@ sys.setdefaultencoding("utf-8")
 VECFILE, VOCAB, LANG, OUTPUT_FILE = sys.argv[1:5]
 
 def clean(string):
+    if string == '<UNK>' or string == '<unk>':
+        return string
     string = string.replace("http://dbpedia.org/ontology/", "dbo_")
     string = string.replace("http://dbpedia.org/property/", "dbp_")
     string = string.replace("http://dbpedia.org/resource/", "dbr_en_")
