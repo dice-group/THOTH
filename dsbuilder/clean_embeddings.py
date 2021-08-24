@@ -22,7 +22,7 @@ vocab = list()
 with open(VOCAB) as f:
     for line in f:
         vocab.append(line)
-print 'Vocabulary size: ' + len(vocab)
+print 'Vocabulary size:', len(vocab)
 oov = 0
 with open(VECFILE) as f:
     with open(OUTPUT_FILE) as fout:
@@ -36,4 +36,4 @@ with open(VECFILE) as f:
                     fout.write(label + ' ' + def_val+ "\n")
                     oov = oov + 1
 
-print 'Out of vocabulary: ' + oov
+print 'Out of vocabulary:', oov
