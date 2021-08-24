@@ -21,7 +21,7 @@ def_val = ' '.join([str(v) for v in [0.0]*500])
 vocab = set()
 with open(VOCAB) as f:
     for line in f:
-        vocab.append(clean(line))
+        vocab.add(clean(line))
 print 'Vocabulary size:', len(vocab)
 with open(VECFILE) as f:
     with open(OUTPUT_FILE, "w") as fout:
