@@ -31,8 +31,8 @@ with open(VECFILE) as f:
             cond1 = ' ' in line[sp+1:-1]
             cond2 = label in vocab
             if cond1 and cond2:
-                fout.write(label + line[sp:-1])
+                fout.write(label + line[sp:-1]+'\n')
                 vocab.remove(label)
-        print 'Out of vocabulary:', len(vocab)
+        print 'Vocab words without embeddings:', len(vocab)
         for oov_word in vocab:
             fout.write(oov_word+' '+def_val+'\n')
