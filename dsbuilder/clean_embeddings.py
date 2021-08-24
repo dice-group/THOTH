@@ -5,7 +5,7 @@ import re
 reload(sys)
 sys.setdefaultencoding("utf-8")
 
-VECFILE, VOCAB, LANG, OUTPUT_FILE = sys.argv[1:4]
+VECFILE, VOCAB, LANG, OUTPUT_FILE = sys.argv[1:5]
 
 def clean(string):
     string = string.replace("http://dbpedia.org/ontology/", "dbo_")
