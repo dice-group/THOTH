@@ -32,7 +32,12 @@ def sparql_query(query):
     sys.stdout.flush()
     return json.loads(j)
 
+# URI to Pre-processed token map
+uri_map = {}
 def clean(string):
+    uri_str = string
+    if uri_str in uri_map:
+        return uri_map[uri_str]
     string = string.replace("http://dbpedia.org/ontology/", "dbo_")
     string = string.replace("http://dbpedia.org/property/", "dbp_")
     string = string.replace("http://dbpedia.org/resource/", "dbr_en_")
@@ -42,6 +47,8 @@ def clean(string):
     string = string.replace("http://" + TGT + ".dbpedia.org/resource/", "dbr_" + TGT + "_")
     string = re.sub(r'\W+', '', string)
     string = string.lower()
+    # Map the end result to its URI
+    uri_map[uri_str] = string
     return string
 
 # ======================================================================
@@ -120,4 +127,7 @@ with open(FILENAME) as f:
 print(j, "/", i)
 for c in cnt:
     print('{}\t{}'.format(c,cnt[c]))
+
+with open(OUTPUT_PATH +'/uri-map.json', 'w') as out:
+    out.write(json.dumps(uri_map, indent=4, sort_keys=True))
 
